@@ -9,37 +9,33 @@ export async function GET(request) {
       return NextResponse.json({ status: 'error', message: 'URL Kosong' }, { status: 400 });
     }
 
-    // 1. Bersihkan URL tanpa merusak parameter bawaan TikTok
-    let targetUrl = rawUrl.replace(/\\u002F/g, '/').replace(/\\u0026/g, '&').replace(/%5Cu002F/g, '/');
+    // 1. BERSIHKAN URL
+    let targetUrl = decodeURIComponent(rawUrl);
+    targetUrl = targetUrl.replace(/\\u002F/g, '/').replace(/\\u0026/g, '&').replace(/%5Cu002F/g, '/');
 
-    // 2. Set Referer dinamis sesuai target
-    let refererTarget = 'https://www.google.com/';
-    if (targetUrl.includes('tiktok') || targetUrl.includes('byte') || targetUrl.includes('tiktokcdn')) {
-      refererTarget = 'https://www.tiktok.com/';
-    } else if (targetUrl.includes('fbcdn') || targetUrl.includes('facebook') || targetUrl.includes('akamai')) {
-      refererTarget = 'https://www.facebook.com/';
-    } else if (targetUrl.includes('instagram')) {
-      refererTarget = 'https://www.instagram.com/';
-    } else if (targetUrl.includes('twimg') || targetUrl.includes('twitter')) {
-      refererTarget = 'https://twitter.com/';
-    }
-
-    // 3. TANGKAP HEADER RANGE DARI BROWSER (KUNCI UTAMA BIAR BISA DI-PLAY)
-    const clientRange = request.headers.get('range');
+    // 2. RAKIT HEADER YANG AMAN DARI 403 FORBIDDEN
+    const fetchHeaders = new Headers();
     
-    // Bikin header untuk dikirim ke server TikTok/FB
-    const fetchHeaders = new Headers({
-      'User-Agent': request.headers.get('user-agent') || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Referer': refererTarget,
-      'Accept': '*/*'
-    });
+    // Wajib: User Agent statis (harus persis sama dengan yang dipakai saat nge-scrape)
+    fetchHeaders.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+    fetchHeaders.set('Accept', '*/*');
 
-    // Kalau browser minta sepotong video (buffering), teruskan permintaan itu ke TikTok
+    // Teruskan Range untuk streaming biar gak putus-putus
+    const clientRange = request.headers.get('range');
     if (clientRange) {
       fetchHeaders.set('Range', clientRange);
     }
 
-    // 4. TEMBAK KE SERVER TIKTOK/FB
+    // KUNCI ANTI 403: JANGAN KASIH REFERER KE TIKTOK CDN!
+    // Kita cuma kasih referer kalau targetnya FB atau IG.
+    if (targetUrl.includes('fbcdn') || targetUrl.includes('facebook') || targetUrl.includes('akamai')) {
+      fetchHeaders.set('Referer', 'https://www.facebook.com/');
+    } else if (targetUrl.includes('instagram') || targetUrl.includes('cdninstagram')) {
+      fetchHeaders.set('Referer', 'https://www.instagram.com/');
+    }
+    // TikTok dibiarkan TANPA Referer agar dianggap sebagai direct-hit biasa.
+
+    // 3. TEMBAK TARGET
     const response = await fetch(targetUrl, {
       method: 'GET',
       headers: fetchHeaders,
@@ -53,14 +49,14 @@ export async function GET(request) {
       );
     }
 
-    // 5. COPY SEMUA HEADER PENTING DARI TIKTOK KE BROWSER KITA
+    // 4. SIAPKAN BALASAN UNTUK BROWSER USER
     const resHeaders = new Headers();
     resHeaders.set('Content-Type', response.headers.get('content-type') || 'video/mp4');
-    resHeaders.set('Content-Disposition', 'inline'); // inline = putar di web
+    resHeaders.set('Content-Disposition', 'inline'); // INLINE = Untuk diputar di Web, BUKAN auto-download
     resHeaders.set('Access-Control-Allow-Origin', '*');
-    resHeaders.set('Accept-Ranges', 'bytes'); // Kasih tau browser kalau kita support di-play maju-mundur
+    resHeaders.set('Accept-Ranges', 'bytes');
 
-    // Teruskan ukuran file dan rentang data kalau ada
+    // Copy panjang file biar bisa di-skip menit videonya (seeking)
     if (response.headers.get('content-length')) {
       resHeaders.set('Content-Length', response.headers.get('content-length'));
     }
@@ -68,7 +64,7 @@ export async function GET(request) {
       resHeaders.set('Content-Range', response.headers.get('content-range'));
     }
 
-    // 6. ALIRKAN KE FRONTEND (status bisa 200 OK atau 206 Partial Content)
+    // 5. KIRIM DATA VIDEO
     return new NextResponse(response.body, { 
       status: response.status, 
       headers: resHeaders 
