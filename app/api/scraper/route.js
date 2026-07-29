@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import axios from 'axios';
 
-// Pembersih URL dari enkripsi unicode & escape character (\/, \u002F, &amp;, dll)
+// Fungsi pembersih URL dari enkripsi unicode (seperti \u002F, \/, dll)
 function cleanUrl(rawUrl) {
   if (!rawUrl) return "";
   let clean = rawUrl;
@@ -128,93 +128,87 @@ export async function POST(request) {
             'Cache-Control': 'no-cache'
           };
 
-          if (targetUrl.includes('pornhub')) {
-            reqHeaders['Cookie'] = 'age_verified=1; platform=pc';
+          // Bypass Disclaimer Dewasa
+          if (targetUrl.includes('pornhub') || targetUrl.includes('xvideos') || targetUrl.includes('xnxx')) {
+            reqHeaders['Cookie'] = 'age_verified=1; platform=pc; wp_adult=1;';
           }
 
           const response = await axios.get(targetUrl, { headers: reqHeaders, timeout: 15000 });
           const html = response.data;
 
-          // Title & Thumbnail Universal
+          // Universal Meta Title & Thumbnail
           const titleMatch = html.match(/<title>([^<]+)<\/title>/i) || html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i);
           if (titleMatch && titleMatch[1]) title = cleanUrl(titleMatch[1]);
 
           const thumbMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i) || html.match(/<meta\s+name="twitter:image"\s+content="([^"]+)"/i);
           if (thumbMatch && thumbMatch[1]) thumbnail = cleanUrl(thumbMatch[1]);
 
-          // 2. FACEBOOK ENGINE (PRIORITAS HD TINGGI)
+          // 2. FACEBOOK ENGINE
           if (isFacebook) {
             platform = "Facebook";
-            
-            // Pola HD yang sering digunakan Facebook dalam JavaScript
             const fbHdPatterns = [
               /["']browser_native_hd_url["']\s*:\s*["']([^"']+)["']/i,
               /["']playable_url_quality_hd["']\s*:\s*["']([^"']+)["']/i,
-              /["']hd_src["']\s*:\s*["']([^"']+)["']/i,
-              /["']hd_src_no_ratelimit["']\s*:\s*["']([^"']+)["']/i
+              /["']hd_src["']\s*:\s*["']([^"']+)["']/i
             ];
             const fbSdPatterns = [
               /["']browser_native_sd_url["']\s*:\s*["']([^"']+)["']/i,
               /["']playable_url["']\s*:\s*["']([^"']+)["']/i,
-              /["']sd_src["']\s*:\s*["']([^"']+)["']/i,
-              /["']sd_src_no_ratelimit["']\s*:\s*["']([^"']+)["']/i
+              /["']sd_src["']\s*:\s*["']([^"']+)["']/i
             ];
 
-            // Cari HD dulu
             for (const pattern of fbHdPatterns) {
               const match = html.match(pattern);
-              if (match && match[1] && match[1] !== "null" && match[1] !== "") {
-                videoUrl = match[1];
-                break;
-              }
+              if (match && match[1] && match[1] !== "null") { videoUrl = match[1]; break; }
             }
-            // Jika HD tidak ada, baru pakai SD
             if (!videoUrl) {
               for (const pattern of fbSdPatterns) {
                 const match = html.match(pattern);
-                if (match && match[1] && match[1] !== "null" && match[1] !== "") {
-                  videoUrl = match[1];
-                  break;
-                }
+                if (match && match[1] && match[1] !== "null") { videoUrl = match[1]; break; }
               }
             }
           }
 
-          // 3. XVIDEOS ENGINE (Paling Stabil & Langsung Cepat)
-          else if (targetUrl.includes('xvideos.com')) {
-            platform = "XVideos";
+          // 3. XVIDEOS & XNXX ENGINE (Satu Pabrik, Script Sama)
+          else if (targetUrl.includes('xvideos.com') || targetUrl.includes('xnxx.com')) {
+            platform = targetUrl.includes('xvideos') ? "XVideos" : "XNXX";
 
-            // Ambil Judul & Thumbnail khusus XVideos Player
-            const xvTitle = html.match(/html5player\.setVideoTitle\('([^']+)'\)/i);
+            // Mengincar setup script html5player secara agresif
+            const xvTitle = html.match(/html5player\.setVideoTitle\(['"]([^'"]+)['"]\)/i);
             if (xvTitle && xvTitle[1]) title = xvTitle[1];
 
-            const xvThumb = html.match(/html5player\.setThumbUrl\('([^']+)'\)/i);
+            const xvThumb = html.match(/html5player\.setThumbUrl(?:169)?\(['"]([^'"]+)['"]\)/i);
             if (xvThumb && xvThumb[1]) thumbnail = xvThumb[1];
 
-            // Ambil Kualitas Tinggi (High) / Rendah (Low) / HLS
-            const xvHigh = html.match(/html5player\.setVideoUrlHigh\('([^']+)'\)/i);
-            const xvLow = html.match(/html5player\.setVideoUrlLow\('([^']+)'\)/i);
-            const xvHls = html.match(/html5player\.setVideoHLS\('([^']+)'\)/i);
+            const xvHigh = html.match(/html5player\.setVideoUrlHigh\(['"]([^'"]+)['"]\)/i);
+            const xvLow = html.match(/html5player\.setVideoUrlLow\(['"]([^'"]+)['"]\)/i);
+            const xvHls = html.match(/html5player\.setVideoHLS\(['"]([^'"]+)['"]\)/i);
 
-            if (xvHigh && xvHigh[1]) {
-              videoUrl = xvHigh[1];
-            } else if (xvLow && xvLow[1]) {
-              videoUrl = xvLow[1];
-            } else if (xvHls && xvHls[1]) {
-              videoUrl = xvHls[1];
-            }
+            if (xvHigh && xvHigh[1]) videoUrl = xvHigh[1];
+            else if (xvLow && xvLow[1]) videoUrl = xvLow[1];
+            else if (xvHls && xvHls[1]) videoUrl = xvHls[1]; // Kadang bentuknya .m3u8 (HLS)
           }
 
-          // 4. PORNHUB ENGINE
+          // 4. PORNHUB ENGINE (Mengekstrak JSON mediaDefinitions)
           else if (targetUrl.includes('pornhub.com')) {
             platform = "Pornhub";
-            const mediaMatches = [...html.matchAll(/"quality":"(\d+(?:p)?)","videoUrl":"([^"]+)"/g)];
-            if (mediaMatches.length > 0) {
-              mediaMatches.sort((a, b) => parseInt(b[1]) - parseInt(a[1]));
-              videoUrl = mediaMatches[0][2];
-            } else {
-              const flashVarMatch = html.match(/"quality_\d+p":"([^"]+)"/i);
-              if (flashVarMatch && flashVarMatch[1]) videoUrl = flashVarMatch[1];
+            // Cari block JSON mediaDefinitions
+            const mediaDefsMatch = html.match(/mediaDefinitions\s*:\s*(\[.*?\])/i);
+            if (mediaDefsMatch && mediaDefsMatch[1]) {
+              try {
+                // Gunakan regex agresif untuk menarik "videoUrl":"http..." dari dalam array
+                const urls = [...mediaDefsMatch[1].matchAll(/"videoUrl"\s*:\s*"([^"]+)"/g)];
+                const validUrls = urls.map(u => cleanUrl(u[1])).filter(u => u.startsWith('http') && u.includes('.mp4'));
+                if (validUrls.length > 0) {
+                  videoUrl = validUrls[0]; // Biasanya index ke-0 adalah kualitas default tertinggi
+                }
+              } catch (e) {}
+            }
+            
+            // Fallback jika mediaDefinitions dienkripsi
+            if (!videoUrl) {
+              const fallbackPh = html.match(/(?:quality_\d+p|videoUrl)["']\s*:\s*["']([^"']+\.mp4[^"']*)["']/i);
+              if (fallbackPh && fallbackPh[1]) videoUrl = fallbackPh[1];
             }
           }
 
@@ -228,21 +222,22 @@ export async function POST(request) {
           // 6. TWITTER / X ENGINE
           else if (targetUrl.includes('x.com') || targetUrl.includes('twitter.com')) {
             platform = "Twitter/X";
-            const twMatch = html.match(/"url":"([^"]+\.mp4[^"]*)"/i) || html.match(/<meta\s+property="og:video:url"\s+content="([^"]+)"/i);
+            const twMatch = html.match(/"url":"([^"]+\.mp4[^"]*)"/i);
             if (twMatch && twMatch[1]) videoUrl = twMatch[1];
           }
 
-          // 7. FALLBACK UNIVERSAL (Filter Cerdas Menghindari Gambar/Iklan)
+          // 7. SUPER FALLBACK (Cari MP4 atau M3U8 Tersembunyi - Brutal Mode)
           if (!videoUrl) {
             const ogVideoMatch = html.match(/<meta\s+property="og:video(?::url|:secure_url)?"\s+content="([^"]+)"/i);
             if (ogVideoMatch && ogVideoMatch[1]) {
               videoUrl = ogVideoMatch[1];
             } else {
-              // Cari semua URL .mp4 di dalam JavaScript
-              const allMp4s = [...html.matchAll(/(https?:\\?\/\\?[^\s"'<>]+\.mp4[^\s"'<>]*)/gi)];
-              for (const m of allMp4s) {
-                const candidate = m[1];
-                // Abaikan jika URL mengandung pattern gambar sprite/iklan/thumbnail
+              // Regex ini menangkap link MP4 ATAU M3U8 walaupun dibungkus \/ escape Javascript
+              // (Tidak memotong string jika URL-nya mengandung query ?hash=123)
+              const allVids = [...html.matchAll(/(https?:\\?\/\\?[^"'\s<>]+?(?:\.mp4|\.m3u8)[^"'\s<>]*)/gi)];
+              for (const m of allVids) {
+                const candidate = cleanUrl(m[1]);
+                // Filter cerdas: BUKAN GAMBAR (Sprite/Iklan)
                 if (!candidate.includes('/rs:fit/') && !candidate.includes('/plain/') && !candidate.includes('preview')) {
                   videoUrl = candidate;
                   break;
@@ -259,16 +254,13 @@ export async function POST(request) {
           platform: platform,
           title: title,
           thumbnail: thumbnail,
+          // Akan muncul status Gagal jika finalVideoUrl kosong (Semua engine & fallback menyerah)
           status: finalVideoUrl ? 'sukses' : 'gagal',
           video_url: finalVideoUrl
         };
 
       } catch (err) {
-        return {
-          url_input: targetUrl,
-          status: 'error',
-          pesan: err.message
-        };
+        return { url_input: targetUrl, status: 'error', pesan: err.message };
       }
     });
 
