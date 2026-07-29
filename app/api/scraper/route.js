@@ -1,3 +1,13 @@
+// Fungsi untuk membersihkan kode unicode aneh dari URL JSON
+function cleanUrl(rawUrl) {
+  if (!rawUrl) return '';
+  return rawUrl
+    .replace(/\\u002F/g, '/') // Ubah \u002F jadi /
+    .replace(/\\u0026/g, '&') // Ubah \u0026 jadi &
+    .replace(/\\u0025/g, '%') // Ubah \u0025 jadi %
+    .replace(/\\\//g, '/');   // Ubah \/ jadi /
+}
+
 export async function POST(request) {
   try {
     const { urls } = await request.json();
@@ -29,37 +39,43 @@ export async function POST(request) {
         const imageMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
         if (imageMatch && imageMatch[1]) image = imageMatch[1];
 
+        // Facebook
         if (urlTarget.includes('facebook.com') || urlTarget.includes('fb.watch')) {
           platformDitemukan = "Facebook";
           const regexFb = /"playable_url_quality_hd":"([^"]+)"/i;
           const regexFbSd = /"playable_url":"([^"]+)"/i;
           let match = html.match(regexFb) || html.match(regexFbSd);
-          if (match && match[1]) videoLink = match[1].replace(/\\\//g, '/').replace(/\\u0025/g, '%');
+          if (match && match[1]) videoLink = cleanUrl(match[1]);
         } 
+        // TikTok
         else if (urlTarget.includes('tiktok.com')) {
           platformDitemukan = "TikTok";
           const regexTiktok = /"playAddr":"([^"]+)"/i;
-          let match = html.match(regexTiktok);
-          if (match && match[1]) videoLink = match[1].replace(/\\\//g, '/').replace(/\\u0026/g, '&');
+          const regexTiktokAlt = /"downloadAddr":"([^"]+)"/i;
+          let match = html.match(regexTiktok) || html.match(regexTiktokAlt);
+          if (match && match[1]) videoLink = cleanUrl(match[1]);
         }
+        // Instagram
         else if (urlTarget.includes('instagram.com')) {
           platformDitemukan = "Instagram";
           const regexIg = /"video_url":"([^"]+)"/i;
           let match = html.match(regexIg);
-          if (match && match[1]) videoLink = match[1].replace(/\\\//g, '/');
+          if (match && match[1]) videoLink = cleanUrl(match[1]);
         }
+        // Twitter/X
         else if (urlTarget.includes('twitter.com') || urlTarget.includes('x.com')) {
           platformDitemukan = "Twitter/X";
           const regexTwitter = /"url":"([^"]+\.mp4[^"]*)"/i;
           let match = html.match(regexTwitter);
-          if (match && match[1]) videoLink = match[1].replace(/\\\//g, '/');
+          if (match && match[1]) videoLink = cleanUrl(match[1]);
         }
 
+        // Fallback Web Umum
         if (!videoLink) {
           const regexOgVideo = /<meta\s+property="og:video"\s+content="([^"]+)"/i;
           const matchOg = html.match(regexOgVideo);
           if (matchOg && matchOg[1]) {
-            videoLink = matchOg[1].replace(/&amp;/g, '&');
+            videoLink = cleanUrl(matchOg[1].replace(/&amp;/g, '&'));
           } else {
             const regexGeneralMp4 = /(https?:\/\/[^\s"'<>]+\.(?:mp4|m3u8)[^\s"'<>]*)/i;
             const matchGeneral = html.match(regexGeneralMp4);
@@ -77,7 +93,7 @@ export async function POST(request) {
         };
 
       } catch (err) {
-        return { url_asli: url, status: 'error', pesan: err.message };
+        return { url_asli: urlTarget, status: 'error', pesan: err.message };
       }
     });
 
