@@ -11,10 +11,12 @@ export async function GET(request) {
 
     let targetUrl = decodeURIComponent(rawUrl);
 
-    // DYNAMIC REFERER: Mengelabui CDN server agar bisa memutar video di new tab
+    // KUNCI BYPASS 403 FORBIDDEN: Sesuaikan Referer berdasarkan domain CDN
     let refererHeader = 'https://www.google.com/';
-    if (targetUrl.includes('xvideos.com') || targetUrl.includes('xv-phcdn')) {
-      refererHeader = 'https://www.xvideos.com/';
+    
+    // Tambahkan XNXX & XVIDEOS
+    if (targetUrl.includes('xvideos.com') || targetUrl.includes('xv-phcdn') || targetUrl.includes('xnxx')) {
+      refererHeader = targetUrl.includes('xnxx') ? 'https://www.xnxx.com/' : 'https://www.xvideos.com/';
     } else if (targetUrl.includes('phncdn.com') || targetUrl.includes('pornhub')) {
       refererHeader = 'https://www.pornhub.com/';
     } else if (targetUrl.includes('fbcdn') || targetUrl.includes('facebook')) {
@@ -31,6 +33,7 @@ export async function GET(request) {
       'Accept': '*/*'
     });
 
+    // Teruskan Range biar video bisa diputar di web tanpa auto-download
     const clientRange = request.headers.get('range');
     if (clientRange) {
       fetchHeaders.set('Range', clientRange);
@@ -42,12 +45,14 @@ export async function GET(request) {
     });
 
     if (!response.ok) {
-      return NextResponse.json({ status: 'error', message: `Gagal dari CDN: ${response.status}` }, { status: response.status });
+      return NextResponse.json({ status: 'error', message: `Gagal dari sumber CDN: ${response.status}` }, { status: response.status });
     }
 
     const resHeaders = new Headers();
-    resHeaders.set('Content-Type', response.headers.get('content-type') || 'video/mp4');
-    resHeaders.set('Content-Disposition', 'inline'); // Buka & Play di Tab Baru
+    // Jika URL m3u8 (HLS Format) sesuaikan Content-Type
+    const isM3u8 = targetUrl.includes('.m3u8');
+    resHeaders.set('Content-Type', response.headers.get('content-type') || (isM3u8 ? 'application/x-mpegURL' : 'video/mp4'));
+    resHeaders.set('Content-Disposition', 'inline'); // INLINE = Play di browser / New Tab
     resHeaders.set('Access-Control-Allow-Origin', '*');
     resHeaders.set('Accept-Ranges', 'bytes');
 
