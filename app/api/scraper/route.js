@@ -1,11 +1,10 @@
-// Fungsi untuk membersihkan kode unicode aneh dari URL JSON
 function cleanUrl(rawUrl) {
   if (!rawUrl) return '';
   return rawUrl
-    .replace(/\\u002F/g, '/') // Ubah \u002F jadi /
-    .replace(/\\u0026/g, '&') // Ubah \u0026 jadi &
-    .replace(/\\u0025/g, '%') // Ubah \u0025 jadi %
-    .replace(/\\\//g, '/');   // Ubah \/ jadi /
+    .replace(/\\u002F/g, '/')
+    .replace(/\\u0026/g, '&')
+    .replace(/\\u0025/g, '%')
+    .replace(/\\\//g, '/');
 }
 
 export async function POST(request) {
@@ -23,7 +22,7 @@ export async function POST(request) {
 
         const response = await fetch(urlTarget, {
           headers: { 
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
           }
         });
         
@@ -39,30 +38,54 @@ export async function POST(request) {
         const imageMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
         if (imageMatch && imageMatch[1]) image = imageMatch[1];
 
-        // Facebook
+        // ==========================================
+        // 1. FACEBOOK (Multi-Key Regex)
+        // ==========================================
         if (urlTarget.includes('facebook.com') || urlTarget.includes('fb.watch')) {
           platformDitemukan = "Facebook";
-          const regexFb = /"playable_url_quality_hd":"([^"]+)"/i;
-          const regexFbSd = /"playable_url":"([^"]+)"/i;
-          let match = html.match(regexFb) || html.match(regexFbSd);
-          if (match && match[1]) videoLink = cleanUrl(match[1]);
+          // Jaring yang lebih luas untuk menangkap berbagai jenis video FB
+          const fbPatterns = [
+            /"browser_native_hd_url":"([^"]+)"/i,
+            /"browser_native_sd_url":"([^"]+)"/i,
+            /"playable_url_quality_hd":"([^"]+)"/i,
+            /"playable_url":"([^"]+)"/i,
+            /"hd_src":"([^"]+)"/i,
+            /"sd_src":"([^"]+)"/i
+          ];
+          
+          for (let pola of fbPatterns) {
+            let match = html.match(pola);
+            if (match && match[1]) {
+              videoLink = cleanUrl(match[1]);
+              break; // Kalau ketemu satu, langsung hentikan pencarian
+            }
+          }
         } 
-        // TikTok
+        
+        // ==========================================
+        // 2. TIKTOK (Utamakan DownloadAddr)
+        // ==========================================
         else if (urlTarget.includes('tiktok.com')) {
           platformDitemukan = "TikTok";
-          const regexTiktok = /"playAddr":"([^"]+)"/i;
-          const regexTiktokAlt = /"downloadAddr":"([^"]+)"/i;
-          let match = html.match(regexTiktok) || html.match(regexTiktokAlt);
-          if (match && match[1]) videoLink = cleanUrl(match[1]);
+          // Prioritas 1: URL Download Asli, Prioritas 2: URL Streaming
+          const regexDownload = /"downloadAddr":"([^"]+)"/i;
+          const regexPlay = /"playAddr":"([^"]+)"/i;
+          
+          let match = html.match(regexDownload) || html.match(regexPlay);
+          if (match && match[1]) {
+            videoLink = cleanUrl(match[1]);
+          }
         }
-        // Instagram
+        
+        // ==========================================
+        // 3. INSTAGRAM & TWITTER
+        // ==========================================
         else if (urlTarget.includes('instagram.com')) {
           platformDitemukan = "Instagram";
           const regexIg = /"video_url":"([^"]+)"/i;
           let match = html.match(regexIg);
           if (match && match[1]) videoLink = cleanUrl(match[1]);
         }
-        // Twitter/X
         else if (urlTarget.includes('twitter.com') || urlTarget.includes('x.com')) {
           platformDitemukan = "Twitter/X";
           const regexTwitter = /"url":"([^"]+\.mp4[^"]*)"/i;
@@ -70,7 +93,9 @@ export async function POST(request) {
           if (match && match[1]) videoLink = cleanUrl(match[1]);
         }
 
-        // Fallback Web Umum
+        // ==========================================
+        // 4. FALLBACK UMUM
+        // ==========================================
         if (!videoLink) {
           const regexOgVideo = /<meta\s+property="og:video"\s+content="([^"]+)"/i;
           const matchOg = html.match(regexOgVideo);
