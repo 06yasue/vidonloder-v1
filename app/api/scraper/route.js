@@ -1,19 +1,16 @@
 import { NextResponse } from 'next/server';
+import axios from 'axios';
 
-// FUNGSI PEMBANTAI UNICODE & KOTORAN URL
-function superDecodeUrl(rawUrl) {
+// Fungsi pembersih URL dari segala macam unicode sampah (\u002F, dll)
+function cleanUrl(rawUrl) {
   if (!rawUrl) return "";
-  let cleanUrl = rawUrl;
-  
-  // Lapis 1: Coba paksa parse sebagai JSON string
+  let clean = rawUrl;
   try {
-    cleanUrl = JSON.parse(`"${cleanUrl.replace(/\\"/g, '"')}"`);
+    clean = JSON.parse(`"${clean.replace(/\\"/g, '"')}"`);
   } catch (e) {
-    // Abaikan jika gagal, lanjut ke lapis 2
+    // Kalau gagal parse json, pakai replace manual
   }
-
-  // Lapis 2: Replace manual semua unicode yang sering muncul di TikTok/FB
-  cleanUrl = cleanUrl
+  return clean
     .replace(/\\u002F/g, '/')
     .replace(/\\u0026/g, '&')
     .replace(/\\u0025/g, '%')
@@ -22,167 +19,146 @@ function superDecodeUrl(rawUrl) {
     .replace(/%3A/g, ':')
     .replace(/%3F/g, '?')
     .replace(/%3D/g, '=')
-    .replace(/%26/g, '&')
     .replace(/&amp;/g, '&');
-
-  return cleanUrl;
 }
 
 export async function POST(request) {
   try {
-    // Tangkap data dari frontend
+    // Tangkap data body dari frontend (mendukung multi-URL)
     const body = await request.json();
     const urls = body.urls;
 
     if (!urls || !Array.isArray(urls) || urls.length === 0) {
-      return NextResponse.json({ success: false, pesan: "Mana URL-nya? Harus berupa array minimal 1 URL" }, { status: 400 });
+      return NextResponse.json({ 
+        success: false, 
+        pesan: "Format URL salah! Harus mengirim array 'urls'." 
+      }, { status: 400 });
     }
 
-    // MULTI-URL PARALLEL SCRAPING
-    const scrapeTasks = urls.map(async (rawTarget) => {
-      const urlTarget = rawTarget.trim();
+    // Eksekusi scraping secara paralel (Multi-Download bersamaan)
+    const scrapePromises = urls.map(async (rawUrl) => {
+      const urlTarget = typeof rawUrl === 'string' ? rawUrl.trim() : '';
       if (!urlTarget) return null;
 
       try {
-        // Tembak URL dengan Header Browser Asli (Bypass Anti-Bot ringan)
-        const response = await fetch(urlTarget, {
+        // Menggunakan Axios dengan User-Agent browser desktop
+        const response = await axios.get(urlTarget, {
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Sec-Fetch-Mode': 'navigate',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9'
           },
-          // Jangan ikuti redirect otomatis terlalu dalam biar nggak timeout
-          redirect: 'follow'
+          timeout: 10000 // Batas waktu 10 detik per URL agar tidak gantung
         });
 
-        if (!response.ok) {
-          throw new Error(`Server target menolak akses (Status: ${response.status})`);
+        const html = response.data;
+        let videoUrl = "";
+        let platform = "Web Umum";
+        let title = "Video Tanpa Judul";
+
+        // Ambil judul halaman HTML jika ada
+        const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+        if (titleMatch && titleMatch[1]) {
+          title = titleMatch[1].trim();
         }
 
-        const html = await response.text();
-        let videoUrl = "";
-        let platformName = "Web Umum";
-        let title = "Video " + Math.floor(Math.random() * 1000);
-
-        // Cari Judul (Opsional)
-        const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-        if (titleMatch) title = titleMatch[1].trim();
-
         // ==========================================
-        // LOGIKA 1: TIKTOK (Banyak Lapis)
+        // 1. LOGIKA TIKTOK
         // ==========================================
         if (urlTarget.includes('tiktok.com')) {
-          platformName = "TikTok";
+          platform = "TikTok";
+          // Cari downloadAddr atau playAddr di dalam source HTML
+          const dMatch = html.match(/"downloadAddr":"([^"]+)"/i);
+          const pMatch = html.match(/"playAddr":"([^"]+)"/i);
           
-          // Lapis 1: Cari Universal Data Rehydration (JSON mentah TikTok)
-          const regexJson = /<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([^<]+)<\/script>/;
-          const jsonMatch = html.match(regexJson);
-          
-          if (jsonMatch && jsonMatch[1]) {
-            const strData = jsonMatch[1];
-            // Cari downloadAddr dulu (kualitas lebih baik, tanpa watermark jika hoki)
-            const dMatch = strData.match(/"downloadAddr":"([^"]+)"/i);
-            const pMatch = strData.match(/"playAddr":"([^"]+)"/i);
-            
-            if (dMatch && dMatch[1]) videoUrl = dMatch[1];
-            else if (pMatch && pMatch[1]) videoUrl = pMatch[1];
-          }
-
-          // Lapis 2: Kalau script gak ketemu, pake Regex buta ke seluruh HTML
-          if (!videoUrl) {
-            const butaMatch = html.match(/"(?:downloadAddr|playAddr)":"([^"]+)"/i);
-            if (butaMatch) videoUrl = butaMatch[1];
-          }
-        }
+          if (dMatch && dMatch[1]) videoUrl = dMatch[1];
+          else if (pMatch && pMatch[1]) videoUrl = pMatch[1];
+        } 
         
         // ==========================================
-        // LOGIKA 2: FACEBOOK (Semua Kemungkinan Key)
+        // 2. LOGIKA FACEBOOK
         // ==========================================
-        else if (urlTarget.includes('facebook.com') || urlTarget.includes('fb.watch') || urlTarget.includes('fb.com')) {
-          platformName = "Facebook";
-          // Cari dari kualitas HD sampai SD
-          const fbRegexList = [
+        else if (urlTarget.includes('facebook.com') || urlTarget.includes('fb.watch')) {
+          platform = "Facebook";
+          const fbPatterns = [
             /"browser_native_hd_url":"([^"]+)"/i,
-            /"playable_url_quality_hd":"([^"]+)"/i,
-            /"hd_src":"([^"]+)"/i,
             /"browser_native_sd_url":"([^"]+)"/i,
+            /"playable_url_quality_hd":"([^"]+)"/i,
             /"playable_url":"([^"]+)"/i,
-            /"sd_src":"([^"]+)"/i,
-            /"video_url":"([^"]+)"/i
+            /"hd_src":"([^"]+)"/i,
+            /"sd_src":"([^"]+)"/i
           ];
 
-          for (const rx of fbRegexList) {
-            const match = html.match(rx);
+          for (const pattern of fbPatterns) {
+            const match = html.match(pattern);
             if (match && match[1]) {
               videoUrl = match[1];
-              break; // Kalo ketemu 1, langsung stop cari
+              break;
             }
           }
-        }
+        } 
         
         // ==========================================
-        // LOGIKA 3: INSTAGRAM / THREADS
+        // 3. LOGIKA INSTAGRAM
         // ==========================================
-        else if (urlTarget.includes('instagram.com') || urlTarget.includes('threads.net')) {
-          platformName = "Instagram";
-          const igMatch = html.match(/"video_url":"([^"]+)"/i) || html.match(/"video_versions":\[{"type":\d+,"url":"([^"]+)"/i);
-          if (igMatch) videoUrl = igMatch[1];
-        }
+        else if (urlTarget.includes('instagram.com')) {
+          platform = "Instagram";
+          const igMatch = html.match(/"video_url":"([^"]+)"/i);
+          if (igMatch && igMatch[1]) videoUrl = igMatch[1];
+        } 
         
         // ==========================================
-        // LOGIKA 4: TWITTER / X
+        // 4. LOGIKA TWITTER / X
         // ==========================================
         else if (urlTarget.includes('x.com') || urlTarget.includes('twitter.com')) {
-          platformName = "Twitter/X";
-          // Twitter sering nampilin banyak resolusi, ambil yg ada tulisan .mp4
+          platform = "Twitter/X";
           const twMatch = html.match(/"url":"([^"]+\.mp4[^"]*)"/i);
-          if (twMatch) videoUrl = twMatch[1];
+          if (twMatch && twMatch[1]) videoUrl = twMatch[1];
         }
 
         // ==========================================
-        // LOGIKA 5: FALLBACK GLOBAL (Website Apapun)
+        // 5. FALLBACK GLOBAL (Mencari tag OpenGraph video)
         // ==========================================
         if (!videoUrl) {
-          const ogVideoMatch = html.match(/<meta\s+property="og:video(:url|:secure_url)?"\s+content="([^"]+)"/i);
-          if (ogVideoMatch) {
-            videoUrl = ogVideoMatch[2];
+          const ogMatch = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i);
+          if (ogMatch && ogMatch[1]) {
+            videoUrl = ogMatch[2];
           } else {
-            // Deteksi link MP4 murni di dalam HTML
             const mp4Match = html.match(/(https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*)/i);
-            if (mp4Match) videoUrl = mp4Match[1];
+            if (mp4Match && mp4Match[1]) videoUrl = mp4Match[1];
           }
         }
 
-        // BERSIHKAN URL FINAL
-        let finalVideoUrl = superDecodeUrl(videoUrl);
+        // Bersihkan hasil akhir URL video
+        const finalVideoUrl = cleanUrl(videoUrl);
 
         return {
-          url_input: urlTarget,
-          platform: platformName,
+          url_asli: urlTarget,
+          platform: platform,
           title: title,
-          status: finalVideoUrl ? 'sukses' : 'gagal (Video tidak ditemukan/tergembok)',
+          status: finalVideoUrl ? 'sukses' : 'gagal (Video terproteksi)',
           video_url: finalVideoUrl
         };
 
       } catch (err) {
         return {
-          url_input: urlTarget,
+          url_asli: urlTarget,
           status: 'error',
           pesan: err.message
         };
       }
     });
 
-    // Jalankan semua task scraping secara bersamaan
-    const hasilScraping = await Promise.all(scrapeTasks);
-    
-    // Filter hasil yang null
-    const finalData = hasilScraping.filter(item => item !== null);
+    // Tunggu semua proses selesai secara bersamaan
+    const hasilAll = await Promise.all(scrapePromises);
+    const filteredHasil = hasilAll.filter(item => item !== null);
 
-    return NextResponse.json({ success: true, data: finalData });
+    return NextResponse.json({ success: true, data: filteredHasil });
 
   } catch (error) {
-    return NextResponse.json({ success: false, pesan: "Fatal Error di Server Scraper: " + error.message }, { status: 500 });
+    return NextResponse.json({ 
+      success: false, 
+      pesan: "Gagal memproses server scraper: " + error.message 
+    }, { status: 500 });
   }
 }
