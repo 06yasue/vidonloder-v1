@@ -3,73 +3,78 @@ import { NextResponse } from 'next/server';
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
-    const rawUrl = searchParams.get('video') || searchParams.get('url');
-    const type = searchParams.get('type') || 'video';
+    const rawUrl = searchParams.get('url') || searchParams.get('video');
 
     if (!rawUrl) {
-      return NextResponse.json({ status: 'error', message: 'URL tidak ditemukan' }, { status: 400 });
+      return NextResponse.json({ status: 'error', message: 'URL Kosong' }, { status: 400 });
     }
 
-    // 1. BERSIHKAN URL MUTLAK
-    // Mencegah error jika URL dari frontend masih bawa karakter aneh (%2F, \u002F)
-    let targetUrl = decodeURIComponent(rawUrl);
-    targetUrl = targetUrl.replace(/\\u002F/g, '/').replace(/\\u0026/g, '&').replace(/%5Cu002F/g, '/');
+    // 1. Bersihkan URL tanpa merusak parameter bawaan TikTok
+    let targetUrl = rawUrl.replace(/\\u002F/g, '/').replace(/\\u0026/g, '&').replace(/%5Cu002F/g, '/');
 
-    if (!targetUrl.startsWith('http')) {
-      return NextResponse.json({ status: 'error', message: 'Format URL rusak: ' + targetUrl }, { status: 400 });
-    }
-
-    // 2. REFERER DINAMIS (Anti-Blokir Server)
-    // Otomatis ganti referer menyesuaikan sumber video biar gak ditolak (Failed to retrieve)
+    // 2. Set Referer dinamis sesuai target
     let refererTarget = 'https://www.google.com/';
-    if (targetUrl.includes('tiktok') || targetUrl.includes('byte')) {
+    if (targetUrl.includes('tiktok') || targetUrl.includes('byte') || targetUrl.includes('tiktokcdn')) {
       refererTarget = 'https://www.tiktok.com/';
     } else if (targetUrl.includes('fbcdn') || targetUrl.includes('facebook') || targetUrl.includes('akamai')) {
       refererTarget = 'https://www.facebook.com/';
-    } else if (targetUrl.includes('instagram') || targetUrl.includes('cdninstagram')) {
+    } else if (targetUrl.includes('instagram')) {
       refererTarget = 'https://www.instagram.com/';
     } else if (targetUrl.includes('twimg') || targetUrl.includes('twitter')) {
       refererTarget = 'https://twitter.com/';
     }
 
-    // 3. TARIK DATA DARI SERVER ASLI
+    // 3. TANGKAP HEADER RANGE DARI BROWSER (KUNCI UTAMA BIAR BISA DI-PLAY)
+    const clientRange = request.headers.get('range');
+    
+    // Bikin header untuk dikirim ke server TikTok/FB
+    const fetchHeaders = new Headers({
+      'User-Agent': request.headers.get('user-agent') || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Referer': refererTarget,
+      'Accept': '*/*'
+    });
+
+    // Kalau browser minta sepotong video (buffering), teruskan permintaan itu ke TikTok
+    if (clientRange) {
+      fetchHeaders.set('Range', clientRange);
+    }
+
+    // 4. TEMBAK KE SERVER TIKTOK/FB
     const response = await fetch(targetUrl, {
       method: 'GET',
-      headers: { 
-        'Referer': refererTarget, 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': '*/*'
-      }
+      headers: fetchHeaders,
+      redirect: 'follow'
     });
 
     if (!response.ok) {
-      throw new Error(`Akses ditolak oleh CDN target (Status: ${response.status})`);
+      return NextResponse.json(
+        { status: 'error', message: `Ditolak server target: ${response.status} ${response.statusText}` },
+        { status: response.status }
+      );
     }
 
-    // 4. ATUR HEADER AGAR BISA DIPUTAR (BUKAN LANGSUNG DOWNLOAD)
-    const headers = new Headers();
-    
-    // Ambil format asli video/audio dari server sumber
-    const contentType = response.headers.get('content-type') || (type === 'audio' ? 'audio/mpeg' : 'video/mp4');
-    headers.set('Content-Type', contentType);
-    
-    // Ambil ukuran file (Penting agar video bisa di-klik maju-mundur/seek)
-    const contentLength = response.headers.get('content-length');
-    if (contentLength) {
-      headers.set('Content-Length', contentLength);
+    // 5. COPY SEMUA HEADER PENTING DARI TIKTOK KE BROWSER KITA
+    const resHeaders = new Headers();
+    resHeaders.set('Content-Type', response.headers.get('content-type') || 'video/mp4');
+    resHeaders.set('Content-Disposition', 'inline'); // inline = putar di web
+    resHeaders.set('Access-Control-Allow-Origin', '*');
+    resHeaders.set('Accept-Ranges', 'bytes'); // Kasih tau browser kalau kita support di-play maju-mundur
+
+    // Teruskan ukuran file dan rentang data kalau ada
+    if (response.headers.get('content-length')) {
+      resHeaders.set('Content-Length', response.headers.get('content-length'));
+    }
+    if (response.headers.get('content-range')) {
+      resHeaders.set('Content-Range', response.headers.get('content-range'));
     }
 
-    // INLINE = Putar di browser (Preview). ATTACHMENT = Langsung download otomatis.
-    // Sesuai permintaan lo, kita set inline.
-    headers.set('Content-Disposition', 'inline');
-    
-    // Bypass aturan CORS
-    headers.set('Access-Control-Allow-Origin', '*');
-
-    // ALIRKAN VIDEO KE FRONTEND
-    return new NextResponse(response.body, { status: 200, headers });
+    // 6. ALIRKAN KE FRONTEND (status bisa 200 OK atau 206 Partial Content)
+    return new NextResponse(response.body, { 
+      status: response.status, 
+      headers: resHeaders 
+    });
 
   } catch (error) {
-    return NextResponse.json({ status: 'error', message: error.message }, { status: 500 });
+    return NextResponse.json({ status: 'error', message: `Server error: ${error.message}` }, { status: 500 });
   }
 }
