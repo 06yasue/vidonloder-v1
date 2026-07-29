@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import axios from 'axios';
 
-// Pembersih URL dari enkripsi unicode (seperti \u002F, dll)
+// Pembersih URL dari enkripsi unicode & escape character (\/, \u002F, &amp;, dll)
 function cleanUrl(rawUrl) {
   if (!rawUrl) return "";
   let clean = rawUrl;
@@ -87,7 +87,7 @@ async function scrapeTiktok(url) {
 }
 
 // ==========================================
-// HANDLER UTAMA
+// HANDLER UTAMA API (POST)
 // ==========================================
 export async function POST(request) {
   try {
@@ -108,7 +108,7 @@ export async function POST(request) {
         let title = "Video Tanpa Judul";
         let thumbnail = "https://via.placeholder.com/500x500?text=No+Thumbnail";
 
-        // 1. ENGINE TIKTOK
+        // 1. TIKTOK ENGINE
         if (targetUrl.includes('tiktok.com')) {
           platform = "TikTok";
           const tiktokData = await scrapeTiktok(targetUrl);
@@ -117,7 +117,6 @@ export async function POST(request) {
           videoUrl = tiktokData.videoUrl;
         } 
         else {
-          // KUNCI FB: FB harus pakai Mobile User-Agent agar tidak error & memunculkan hd_src
           const isFacebook = targetUrl.includes('facebook.com') || targetUrl.includes('fb.watch') || targetUrl.includes('fb.me');
           
           let reqHeaders = {
@@ -129,7 +128,6 @@ export async function POST(request) {
             'Cache-Control': 'no-cache'
           };
 
-          // KUNCI PORNHUB: Harus ada cookie age_verified
           if (targetUrl.includes('pornhub')) {
             reqHeaders['Cookie'] = 'age_verified=1; platform=pc';
           }
@@ -137,73 +135,118 @@ export async function POST(request) {
           const response = await axios.get(targetUrl, { headers: reqHeaders, timeout: 15000 });
           const html = response.data;
 
-          // Universal Title & Thumbnail
+          // Title & Thumbnail Universal
           const titleMatch = html.match(/<title>([^<]+)<\/title>/i) || html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i);
           if (titleMatch && titleMatch[1]) title = cleanUrl(titleMatch[1]);
 
           const thumbMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i) || html.match(/<meta\s+name="twitter:image"\s+content="([^"]+)"/i);
           if (thumbMatch && thumbMatch[1]) thumbnail = cleanUrl(thumbMatch[1]);
 
-          // 2. ENGINE FACEBOOK
+          // 2. FACEBOOK ENGINE (PRIORITAS HD TINGGI)
           if (isFacebook) {
             platform = "Facebook";
+            
+            // Pola HD yang sering digunakan Facebook dalam JavaScript
             const fbHdPatterns = [
-              /"browser_native_hd_url":"([^"]+)"/i,
-              /"playable_url_quality_hd":"([^"]+)"/i,
-              /"hd_src":"([^"]+)"/i
+              /["']browser_native_hd_url["']\s*:\s*["']([^"']+)["']/i,
+              /["']playable_url_quality_hd["']\s*:\s*["']([^"']+)["']/i,
+              /["']hd_src["']\s*:\s*["']([^"']+)["']/i,
+              /["']hd_src_no_ratelimit["']\s*:\s*["']([^"']+)["']/i
             ];
             const fbSdPatterns = [
-              /"browser_native_sd_url":"([^"]+)"/i,
-              /"playable_url":"([^"]+)"/i,
-              /"sd_src":"([^"]+)"/i
+              /["']browser_native_sd_url["']\s*:\s*["']([^"']+)["']/i,
+              /["']playable_url["']\s*:\s*["']([^"']+)["']/i,
+              /["']sd_src["']\s*:\s*["']([^"']+)["']/i,
+              /["']sd_src_no_ratelimit["']\s*:\s*["']([^"']+)["']/i
             ];
 
+            // Cari HD dulu
             for (const pattern of fbHdPatterns) {
               const match = html.match(pattern);
-              if (match && match[1] && match[1] !== "null") { videoUrl = match[1]; break; }
+              if (match && match[1] && match[1] !== "null" && match[1] !== "") {
+                videoUrl = match[1];
+                break;
+              }
             }
+            // Jika HD tidak ada, baru pakai SD
             if (!videoUrl) {
               for (const pattern of fbSdPatterns) {
                 const match = html.match(pattern);
-                if (match && match[1] && match[1] !== "null") { videoUrl = match[1]; break; }
+                if (match && match[1] && match[1] !== "null" && match[1] !== "") {
+                  videoUrl = match[1];
+                  break;
+                }
               }
             }
           }
-          // 3. ENGINE PORNHUB
+
+          // 3. XVIDEOS ENGINE (Paling Stabil & Langsung Cepat)
+          else if (targetUrl.includes('xvideos.com')) {
+            platform = "XVideos";
+
+            // Ambil Judul & Thumbnail khusus XVideos Player
+            const xvTitle = html.match(/html5player\.setVideoTitle\('([^']+)'\)/i);
+            if (xvTitle && xvTitle[1]) title = xvTitle[1];
+
+            const xvThumb = html.match(/html5player\.setThumbUrl\('([^']+)'\)/i);
+            if (xvThumb && xvThumb[1]) thumbnail = xvThumb[1];
+
+            // Ambil Kualitas Tinggi (High) / Rendah (Low) / HLS
+            const xvHigh = html.match(/html5player\.setVideoUrlHigh\('([^']+)'\)/i);
+            const xvLow = html.match(/html5player\.setVideoUrlLow\('([^']+)'\)/i);
+            const xvHls = html.match(/html5player\.setVideoHLS\('([^']+)'\)/i);
+
+            if (xvHigh && xvHigh[1]) {
+              videoUrl = xvHigh[1];
+            } else if (xvLow && xvLow[1]) {
+              videoUrl = xvLow[1];
+            } else if (xvHls && xvHls[1]) {
+              videoUrl = xvHls[1];
+            }
+          }
+
+          // 4. PORNHUB ENGINE
           else if (targetUrl.includes('pornhub.com')) {
             platform = "Pornhub";
             const mediaMatches = [...html.matchAll(/"quality":"(\d+(?:p)?)","videoUrl":"([^"]+)"/g)];
             if (mediaMatches.length > 0) {
-              mediaMatches.sort((a, b) => parseInt(b[1]) - parseInt(a[1])); // Urutkan Kualitas Tertinggi
+              mediaMatches.sort((a, b) => parseInt(b[1]) - parseInt(a[1]));
               videoUrl = mediaMatches[0][2];
             } else {
               const flashVarMatch = html.match(/"quality_\d+p":"([^"]+)"/i);
               if (flashVarMatch && flashVarMatch[1]) videoUrl = flashVarMatch[1];
             }
           }
-          // 4. ENGINE INSTAGRAM
+
+          // 5. INSTAGRAM ENGINE
           else if (targetUrl.includes('instagram.com')) {
             platform = "Instagram";
             const igMatch = html.match(/"video_url":"([^"]+)"/i) || html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i);
             if (igMatch && igMatch[1]) videoUrl = igMatch[1];
           }
-          // 5. ENGINE TWITTER / X
+
+          // 6. TWITTER / X ENGINE
           else if (targetUrl.includes('x.com') || targetUrl.includes('twitter.com')) {
             platform = "Twitter/X";
             const twMatch = html.match(/"url":"([^"]+\.mp4[^"]*)"/i) || html.match(/<meta\s+property="og:video:url"\s+content="([^"]+)"/i);
             if (twMatch && twMatch[1]) videoUrl = twMatch[1];
           }
 
-          // 6. FALLBACK UNIVERSAL (Embed JS / Cloudflare / Web Umum)
+          // 7. FALLBACK UNIVERSAL (Filter Cerdas Menghindari Gambar/Iklan)
           if (!videoUrl) {
             const ogVideoMatch = html.match(/<meta\s+property="og:video(?::url|:secure_url)?"\s+content="([^"]+)"/i);
             if (ogVideoMatch && ogVideoMatch[1]) {
               videoUrl = ogVideoMatch[1];
             } else {
-              // Regex Cerdas: Mencari link berakhiran .mp4 di dalam seluruh Javascript (Tahan terhadap Parameter Query URL CDN)
-              const jsMp4Match = html.match(/(https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*)/i);
-              if (jsMp4Match && jsMp4Match[1]) {
-                videoUrl = jsMp4Match[1];
+              // Cari semua URL .mp4 di dalam JavaScript
+              const allMp4s = [...html.matchAll(/(https?:\\?\/\\?[^\s"'<>]+\.mp4[^\s"'<>]*)/gi)];
+              for (const m of allMp4s) {
+                const candidate = m[1];
+                // Abaikan jika URL mengandung pattern gambar sprite/iklan/thumbnail
+                if (!candidate.includes('/rs:fit/') && !candidate.includes('/plain/') && !candidate.includes('preview')) {
+                  videoUrl = candidate;
+                  break;
+                }
               }
             }
           }
@@ -235,6 +278,6 @@ export async function POST(request) {
     return NextResponse.json({ success: true, data: filteredHasil });
 
   } catch (error) {
-    return NextResponse.json({ success: false, pesan: "Gagal memproses scraper internal: " + error.message }, { status: 500 });
+    return NextResponse.json({ success: false, pesan: "Gagal memproses scraper: " + error.message }, { status: 500 });
   }
 }
